@@ -62,27 +62,31 @@
 | **Контейнеризация** | Docker, Docker Compose                                                   |
 
 ## 📁 Структура проекта
-
-```
 fixer-app/
-├── backend/                # FastAPI приложение
-│   ├── main.py             # Точка входа, роутеры, lifespan
-│   ├── models.py           # Модели SQLModel (User, Ticket, Duty и др.)
-│   ├── database.py         # Подключение к БД, инициализация
-│   ├── routers/            # API эндпоинты (auth, tickets, duties, ...)
-│   └── requirements.txt    # Python-зависимости
-├── frontend/               # React + TypeScript приложение
-│   ├── src/
-│   │   ├── api/            # Клиент для работы с API (axios)
-│   │   ├── components/     # Переиспользуемые компоненты
-│   │   ├── pages/          # Страницы (Login, Tickets, DutySchedule...)
-│   │   ├── store/          # Zustand сторы (тема, пользователь)
-│   │   └── App.tsx
-│   ├── Dockerfile
-│   └── package.json
+├── backend/ # FastAPI приложение
+│ ├── main.py # Точка входа, роутеры, lifespan
+│ ├── models.py # Модели SQLModel (User, Ticket, Duty и др.)
+│ ├── database.py # Подключение к БД, инициализация
+│ ├── routers/ # API эндпоинты
+│ │ ├── auth.py
+│ │ ├── tickets.py
+│ │ ├── duties.py
+│ │ └── ...
+│ ├── requirements.txt # Python-зависимости
+│ └── Dockerfile
+├── frontend/ # React + TypeScript приложение
+│ ├── src/
+│ │ ├── api/ # Клиент для работы с API (axios)
+│ │ ├── components/ # Переиспользуемые компоненты
+│ │ ├── pages/ # Страницы (Login, Tickets, DutySchedule...)
+│ │ ├── store/ # Zustand сторы (тема, пользователь)
+│ │ ├── App.tsx
+│ │ └── main.tsx
+│ ├── package.json
+│ ├── Dockerfile
+│ └── index.html
 ├── docker-compose.yml
 └── README.md
-```
 
 ## 🚀 Быстрый старт (локально с Docker)
 
