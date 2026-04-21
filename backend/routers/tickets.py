@@ -20,6 +20,15 @@ from models import (
     User, UserRole, DashboardData, TicketStats, WSMessage
 )
 from routers.auth import get_current_active_user, check_admin_role
+from pydantic import BaseModel
+
+class BulkStatusUpdate(BaseModel):
+    ticket_ids: List[int]
+    status: TicketStatus
+
+class MergeTickets(BaseModel):
+    ticket_ids: List[int]
+    title: str
 
 # ===== КОНФИГУРАЦИЯ =====
 
@@ -42,19 +51,16 @@ class ConnectionManager:
         self.active_connections: dict[int, WebSocket] = {}  # user_id -> websocket
     
     async def connect(self, websocket: WebSocket, user_id: int):
-        """Подключает пользователя к WebSocket"""
         await websocket.accept()
         self.active_connections[user_id] = websocket
         print(f"📡 Пользователь {user_id} подключился к WebSocket")
     
     def disconnect(self, user_id: int):
-        """Отключает пользователя от WebSocket"""
         if user_id in self.active_connections:
             del self.active_connections[user_id]
             print(f"📡 Пользователь {user_id} отключился от WebSocket")
     
     async def send_personal_message(self, message: dict, user_id: int):
-        """Отправляет персональное сообщение пользователю"""
         if user_id in self.active_connections:
             try:
                 await self.active_connections[user_id].send_text(json.dumps(message, default=str))
@@ -63,7 +69,6 @@ class ConnectionManager:
                 self.disconnect(user_id)
     
     async def broadcast(self, message: dict, exclude_user_id: Optional[int] = None):
-        """Рассылает сообщение всем подключенным пользователям"""
         for user_id, connection in list(self.active_connections.items()):
             if exclude_user_id and user_id == exclude_user_id:
                 continue
@@ -73,56 +78,41 @@ class ConnectionManager:
                 print(f"❌ Ошибка рассылки пользователю {user_id}: {e}")
                 self.disconnect(user_id)
 
-# Глобальный экземпляр менеджера соединений
 manager = ConnectionManager()
 
 
 # ===== УТИЛИТЫ =====
 
 def validate_file(file: UploadFile) -> bool:
-    """Проверяет валидность загружаемого файла"""
     if not file.filename:
         return False
-    
-    # Проверяем расширение
     file_ext = os.path.splitext(file.filename)[1].lower()
     if file_ext not in ALLOWED_EXTENSIONS:
         return False
-    
     return True
 
 
 async def save_uploaded_file(file: UploadFile, prefix: str = "") -> str:
-    """Сохраняет загруженный файл и возвращает путь"""
     if not validate_file(file):
         raise HTTPException(status_code=400, detail="Недопустимый тип файла")
-    
-    # Генерируем уникальное имя файла
     file_ext = os.path.splitext(file.filename)[1].lower()
     unique_filename = f"{prefix}{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(MEDIA_DIR, unique_filename)
-    
-    # Сохраняем файл
     async with aiofiles.open(file_path, 'wb') as f:
         content = await file.read()
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(status_code=400, detail="Файл слишком большой")
         await f.write(content)
-    
     return file_path
 
 
 async def notify_ticket_update(ticket: Ticket, action: str, session: AsyncSession):
-    """Отправляет уведомления об изменении заявки"""
-    # Получаем полную информацию о заявке
     full_ticket = await get_ticket_by_id(session, ticket.id)
     if not full_ticket:
         return
-    
-    # Формируем сообщение
     message = {
         "type": "ticket_updated",
-        "action": action,  # "created", "assigned", "status_changed", etc.
+        "action": action,
         "ticket": {
             "id": full_ticket.id,
             "title": full_ticket.title,
@@ -132,21 +122,13 @@ async def notify_ticket_update(ticket: Ticket, action: str, session: AsyncSessio
         },
         "timestamp": datetime.utcnow().isoformat()
     }
-    
-    # Отправляем уведомления заинтересованным сторонам
     recipients = []
-    
     if full_ticket.customer_id:
         recipients.append(full_ticket.customer_id)
     if full_ticket.executor_id:
         recipients.append(full_ticket.executor_id)
-    
-    # Уведомляем конкретных пользователей
     for user_id in recipients:
         await manager.send_personal_message(message, user_id)
-    
-    # Рассылаем всем админам
-    # TODO: Можно оптимизировать, получив список админов из БД
     await manager.broadcast(message)
 
 
@@ -154,11 +136,9 @@ async def notify_ticket_update(ticket: Ticket, action: str, session: AsyncSessio
 
 @router.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
-    """WebSocket эндпоинт для realtime уведомлений"""
     await manager.connect(websocket, user_id)
     try:
         while True:
-            # Слушаем сообщения от клиента (пинг/понг)
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
@@ -170,178 +150,123 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
 
 @router.post("/", response_model=TicketPublic)
 async def create_ticket(
-    title: str = Form(...),
-    address: str = Form(...),
-    description: str = Form(...),
-    deadline: str = Form(...),  # ISO datetime string
-    priority: int = Form(1),
-    executor_id: Optional[int] = Form(None),
-    current_user: Annotated[User, Depends(get_current_active_user)] = Depends(),
+    ticket_data: TicketCreate,
+    current_user: Annotated[User, Depends(get_current_active_user)],
     session: AsyncSession = Depends(get_session)
 ):
-    """
-    Создание новой заявки.
-    Клиенты могут создавать заявки, админы могут сразу назначать исполнителя.
-    """
-    # Проверяем права на создание заявок
     if current_user.role not in [UserRole.CUSTOMER, UserRole.ADMIN]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Недостаточно прав для создания заявок"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав для создания заявок")
     
-    # Парсим дату
-    try:
-        deadline_dt = datetime.fromisoformat(deadline.replace('Z', '+00:00'))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Неверный формат даты")
+    # Плановые даты: start_time обязательно, end_time опционально
+    start_time = ticket_data.start_time if ticket_data.start_time else datetime.utcnow()
+    end_time = ticket_data.end_time
     
-    # Проверяем исполнителя (если указан)
-    if executor_id:
+    if ticket_data.executor_id:
         if current_user.role != UserRole.ADMIN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Только администраторы могут назначать исполнителей"
-            )
-        
-        executor = await session.get(User, executor_id)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Только администраторы могут назначать исполнителей")
+        executor = await session.get(User, ticket_data.executor_id)
         if not executor or executor.role != UserRole.EXECUTOR:
             raise HTTPException(status_code=400, detail="Указанный исполнитель не найден")
     
-    # Создаем заявку
     ticket = Ticket(
-        title=title,
-        address=address,
-        description=description,
-        deadline=deadline_dt,
-        priority=priority,
+        title=ticket_data.title,
+        address=ticket_data.address,
+        description=ticket_data.description,
+        start_time=start_time,
+        end_time=end_time,
+        priority=ticket_data.priority,
+        system=ticket_data.system,
         customer_id=current_user.id,
-        executor_id=executor_id,
-        status=TicketStatus.IN_PROGRESS if executor_id else TicketStatus.PENDING,
-        started_at=datetime.utcnow() if executor_id else None
+        executor_id=ticket_data.executor_id,
+        status=TicketStatus.IN_PROGRESS if ticket_data.executor_id else TicketStatus.PENDING,
+        started_at=datetime.utcnow() if ticket_data.executor_id else None
     )
     
     session.add(ticket)
     await session.commit()
     await session.refresh(ticket)
     
-    # Получаем полную информацию о заявке
     full_ticket = await get_ticket_by_id(session, ticket.id)
-    
-    # Отправляем уведомления
     await notify_ticket_update(ticket, "created", session)
-    
     return full_ticket
 
 
 @router.get("/", response_model=List[TicketPublic])
 async def get_tickets(
+    current_user: Annotated[User, Depends(get_current_active_user)],
     status: Optional[TicketStatus] = None,
     executor_id: Optional[int] = None,
     limit: int = 50,
     offset: int = 0,
-    current_user: Annotated[User, Depends(get_current_active_user)] = Depends(),
     session: AsyncSession = Depends(get_session)
 ):
-    """
-    Получение списка заявок с фильтрацией.
-    Права доступа зависят от роли пользователя.
-    """
-    # Получаем заявки в зависимости от роли
     tickets = await get_tickets_for_user(session, current_user.id, current_user.role)
-    
-    # Применяем фильтры
     if status:
         tickets = [t for t in tickets if t.status == status]
-    
     if executor_id:
         tickets = [t for t in tickets if t.executor_id == executor_id]
-    
-    # Применяем пагинацию
     tickets = tickets[offset:offset + limit]
-    
     return tickets
 
 
 @router.get("/{ticket_id}", response_model=TicketPublic)
 async def get_ticket(
     ticket_id: int,
-    current_user: Annotated[User, Depends(get_current_active_user)] = Depends(),
+    current_user: Annotated[User, Depends(get_current_active_user)],
     session: AsyncSession = Depends(get_session)
 ):
-    """Получение информации о конкретной заявке"""
     ticket = await get_ticket_by_id(session, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
-    
-    # Проверяем права доступа
     if current_user.role == UserRole.CUSTOMER and ticket.customer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
     elif current_user.role == UserRole.EXECUTOR and ticket.executor_id != current_user.id:
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
-    
     return ticket
 
 
 @router.put("/{ticket_id}", response_model=TicketPublic)
 async def update_ticket(
     ticket_id: int,
+    current_user: Annotated[User, Depends(get_current_active_user)],
     status: Optional[TicketStatus] = Form(None),
     executor_id: Optional[int] = Form(None),
     completion_comment: Optional[str] = Form(None),
     rejection_reason: Optional[str] = Form(None),
     before_photo: Optional[UploadFile] = File(None),
     after_photo: Optional[UploadFile] = File(None),
-    current_user: Annotated[User, Depends(get_current_active_user)] = Depends(),
     session: AsyncSession = Depends(get_session)
 ):
-    """
-    Обновление заявки.
-    Разные роли имеют разные права на изменение полей.
-    """
     ticket = await get_ticket_by_id(session, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     
-    # Проверяем права доступа
     can_edit = False
     if current_user.role == UserRole.ADMIN:
         can_edit = True
     elif current_user.role == UserRole.EXECUTOR and ticket.executor_id == current_user.id:
         can_edit = True
     elif current_user.role == UserRole.CUSTOMER and ticket.customer_id == current_user.id:
-        # Клиент может редактировать только свои заявки в статусе PENDING
         can_edit = ticket.status == TicketStatus.PENDING
     
     if not can_edit:
         raise HTTPException(status_code=403, detail="Нет прав на редактирование этой заявки")
     
-    # Обновляем поля
     updates_made = []
     
     if status is not None:
         old_status = ticket.status
         ticket.status = status
-        
-        # Обновляем временные метки
         if status == TicketStatus.IN_PROGRESS and old_status == TicketStatus.PENDING:
             ticket.started_at = datetime.utcnow()
         elif status == TicketStatus.DONE:
             ticket.completed_at = datetime.utcnow()
-            # Для завершения требуется комментарий
-            if not completion_comment:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Для завершения заявки необходим комментарий"
-                )
+            if completion_comment:
+                ticket.completion_comment = completion_comment
         elif status == TicketStatus.REJECTED:
-            # Для отклонения требуется причина
             if not rejection_reason:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Для отклонения заявки необходимо указать причину"
-                )
-        
+                raise HTTPException(status_code=400, detail="Для отклонения заявки необходимо указать причину")
+            ticket.rejection_reason = rejection_reason
         updates_made.append(f"статус изменен с {old_status} на {status}")
     
     if executor_id is not None and current_user.role == UserRole.ADMIN:
@@ -351,7 +276,7 @@ async def update_ticket(
             ticket.started_at = datetime.utcnow()
         updates_made.append("назначен исполнитель")
     
-    if completion_comment is not None:
+    if completion_comment is not None and status != TicketStatus.DONE:
         ticket.completion_comment = completion_comment
         updates_made.append("добавлен комментарий")
     
@@ -359,7 +284,6 @@ async def update_ticket(
         ticket.rejection_reason = rejection_reason
         updates_made.append("указана причина отклонения")
     
-    # Обрабатываем загрузку фото
     if before_photo and before_photo.filename:
         file_path = await save_uploaded_file(before_photo, "before_")
         ticket.before_photo_path = file_path
@@ -370,33 +294,26 @@ async def update_ticket(
         ticket.after_photo_path = file_path
         updates_made.append("загружено фото 'после'")
     
-    # Сохраняем изменения
     session.add(ticket)
     await session.commit()
     await session.refresh(ticket)
     
-    # Получаем обновленную информацию
     updated_ticket = await get_ticket_by_id(session, ticket_id)
-    
-    # Отправляем уведомления
     action = "status_changed" if status else "updated"
     await notify_ticket_update(ticket, action, session)
-    
     return updated_ticket
 
 
 @router.delete("/{ticket_id}")
 async def delete_ticket(
     ticket_id: int,
-    current_user: Annotated[User, Depends(check_admin_role)] = Depends(),
+    current_user: Annotated[User, Depends(check_admin_role)],
     session: AsyncSession = Depends(get_session)
 ):
-    """Удаление заявки (только для админов)"""
     ticket = await get_ticket_by_id(session, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     
-    # Удаляем связанные файлы
     for photo_path in [ticket.before_photo_path, ticket.after_photo_path]:
         if photo_path and os.path.exists(photo_path):
             try:
@@ -406,18 +323,71 @@ async def delete_ticket(
     
     await session.delete(ticket)
     await session.commit()
-    
     return {"message": "Заявка удалена"}
 
 
 # ===== ДОПОЛНИТЕЛЬНЫЕ ЭНДПОИНТЫ =====
 
-@router.get("/executors/list", response_model=List[dict])
-async def get_executors_list(
-    current_user: Annotated[User, Depends(get_current_active_user)] = Depends(),
+@router.patch("/bulk-status")
+async def bulk_update_status(
+    data: BulkStatusUpdate,
+    current_user: Annotated[User, Depends(check_admin_role)],
     session: AsyncSession = Depends(get_session)
 ):
-    """Получение списка исполнителей для назначения"""
+    tickets = await session.exec(select(Ticket).where(Ticket.id.in_(data.ticket_ids)))
+    updated = 0
+    for ticket in tickets:
+        ticket.status = data.status
+        session.add(ticket)
+        updated += 1
+    await session.commit()
+    return {"message": f"Статус {data.status.value} применён к {updated} заявкам"}
+
+
+@router.post("/merge", response_model=TicketPublic)
+async def merge_tickets(
+    data: MergeTickets,
+    current_user: Annotated[User, Depends(check_admin_role)],
+    session: AsyncSession = Depends(get_session)
+):
+    if len(data.ticket_ids) < 2:
+        raise HTTPException(status_code=400, detail="Для объединения нужно минимум две заявки")
+    
+    first_ticket = await session.get(Ticket, data.ticket_ids[0])
+    if not first_ticket:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    
+    new_ticket = Ticket(
+        title=data.title,
+        address=first_ticket.address,
+        description="Объединённая заявка",
+        start_time=first_ticket.start_time,
+        end_time=first_ticket.end_time,
+        priority=first_ticket.priority,
+        system=first_ticket.system,
+        customer_id=first_ticket.customer_id,
+        executor_id=first_ticket.executor_id,
+        status=TicketStatus.PENDING
+    )
+    
+    session.add(new_ticket)
+    await session.commit()
+    await session.refresh(new_ticket)
+    
+    for tid in data.ticket_ids:
+        ticket = await session.get(Ticket, tid)
+        if ticket:
+            await session.delete(ticket)
+    
+    await session.commit()
+    return new_ticket
+
+
+@router.get("/executors/list", response_model=List[dict])
+async def get_executors_list(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    session: AsyncSession = Depends(get_session)
+):
     executors = await get_executors(session)
     return [
         {"id": executor.id, "full_name": executor.full_name, "email": executor.email}
@@ -427,29 +397,22 @@ async def get_executors_list(
 
 @router.get("/media/{filename}")
 async def get_media_file(filename: str):
-    """Получение медиа файла"""
     file_path = os.path.join(MEDIA_DIR, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Файл не найден")
-    
     return FileResponse(file_path)
 
 
 @router.get("/dashboard/data", response_model=DashboardData)
 async def get_dashboard_data(
-    current_user: Annotated[User, Depends(get_current_active_user)] = Depends(),
+    current_user: Annotated[User, Depends(get_current_active_user)],
     session: AsyncSession = Depends(get_session)
 ):
-    """Получение данных для дашборда"""
-    # Получаем статистику
     stats_data = await get_ticket_stats(session)
     stats = TicketStats(**stats_data)
-    
-    # Получаем последние заявки
     all_tickets = await get_tickets_for_user(session, current_user.id, current_user.role)
-    recent_tickets = all_tickets[:10]  # Последние 10
+    recent_tickets = all_tickets[:10]
     
-    # Получаем личные заявки (для исполнителей и клиентов)
     my_tickets = None
     if current_user.role in [UserRole.EXECUTOR, UserRole.CUSTOMER]:
         my_tickets = [t for t in all_tickets if 

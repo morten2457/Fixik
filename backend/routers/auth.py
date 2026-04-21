@@ -8,7 +8,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+# from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session, get_user_by_email, get_user_by_id
@@ -24,7 +24,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 часа
 
 # Настройка хеширования паролей
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # OAuth2 схема для получения токена из заголовков
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -34,12 +34,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Проверяет соответствие пароля хешу"""
-    return pwd_context.verify(plain_password, hashed_password)
-
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def get_password_hash(password: str) -> str:
     """Создает хеш пароля"""
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
 async def authenticate_user(session: AsyncSession, email: str, password: str) -> Optional[User]:
@@ -118,6 +117,7 @@ def check_admin_role(current_user: Annotated[User, Depends(get_current_active_us
 @router.post("/register", response_model=UserPublic)
 async def register_user(
     user_data: UserCreate,
+    current_user: Annotated[User, Depends(check_admin_role)],
     session: AsyncSession = Depends(get_session)
 ):
     """
@@ -220,12 +220,50 @@ async def toggle_user_status(
     
     return user
 
+@router.put("/users/{user_id}/role", response_model=UserPublic)
+async def update_user_role(
+    user_id: int,
+    role: UserRole,
+    current_user: Annotated[User, Depends(check_admin_role)],
+    session: AsyncSession = Depends(get_session)
+):
+    """Обновление роли пользователя (только для админов)"""
+    user = await get_user_by_id(session, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    user.role = role
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_user: Annotated[User, Depends(check_admin_role)],
+    session: AsyncSession = Depends(get_session)
+):
+    """Удаление пользователя (только для админов)"""
+    user = await get_user_by_id(session, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Нельзя удалить самого себя
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить свою учётную запись")
+    
+    await session.delete(user)
+    await session.commit()
+    
+    return {"message": "Пользователь удалён"}
 
 @router.post("/change-password")
 async def change_password(
+    current_user: Annotated[User, Depends(get_current_active_user)],
     old_password: str = Form(...),
     new_password: str = Form(...),
-    current_user: Annotated[User, Depends(get_current_active_user)] = Depends(),
     session: AsyncSession = Depends(get_session)
 ):
     """Смена пароля пользователя"""
@@ -277,6 +315,46 @@ def get_user_permissions(user: User) -> dict:
         })
     
     return permissions
+
+import bcrypt
+from pydantic import BaseModel
+
+class UserUpdate(BaseModel):
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+@router.put("/users/{user_id}", response_model=UserPublic)
+async def update_user(
+    user_id: int,
+    user_data: UserUpdate,
+    current_user: Annotated[User, Depends(check_admin_role)],
+    session: AsyncSession = Depends(get_session)
+):
+    user = await get_user_by_id(session, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    if user_data.email is not None:
+        existing = await get_user_by_email(session, user_data.email)
+        if existing and existing.id != user_id:
+            raise HTTPException(status_code=400, detail="Email уже используется")
+        user.email = user_data.email
+    if user_data.full_name is not None:
+        user.full_name = user_data.full_name
+    if user_data.role is not None:
+        user.role = user_data.role
+    if user_data.is_active is not None:
+        user.is_active = user_data.is_active
+    if user_data.password:
+        user.hashed_password = get_password_hash(user_data.password)
+    
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
 
 
 @router.get("/permissions")

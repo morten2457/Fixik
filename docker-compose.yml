@@ -8,12 +8,11 @@ services:
       dockerfile: Dockerfile
     container_name: repair-backend
     environment:
-      - DATABASE_URL=sqlite:///./tickets.db
+      - DATABASE_URL=sqlite:///./data/tickets.db
       - SECRET_KEY=your-production-secret-key-change-this
       - ENVIRONMENT=production
     volumes:
-      - ./backend/tickets.db:/app/tickets.db
-      - ./backend/media:/app/media
+      - ./backend/data:/app/data
     expose:
       - "8000"
     networks:

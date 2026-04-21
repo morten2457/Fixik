@@ -1,19 +1,21 @@
-import { useParams } from 'react-router-dom'
-import { useQuery } from 'react-query'
-import { FileText, MapPin, Calendar, User, Clock } from 'lucide-react'
-import { ticketsAPI } from '../api/client'
-import { useCurrentUser } from '../hooks/useAuth'
-import LoadingSpinner from '../components/LoadingSpinner'
+import { useParams } from 'react-router-dom';
+import { useQuery } from 'react-query';
+import { FileText, MapPin, Calendar, User, Clock } from 'lucide-react';
+import { ticketsAPI } from '../api/client';
+import { useCurrentUser } from '../hooks/useAuth';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 const TicketView = () => {
-  const { id } = useParams()
-  const user = useCurrentUser()
+  const { id } = useParams();
+  const user = useCurrentUser();
 
-  const { data: ticket, isLoading, error } = useQuery(
-    ['ticket', id],
-    () => ticketsAPI.getById(Number(id)),
-    { enabled: !!id }
-  )
+  const {
+    data: ticket,
+    isLoading,
+    error,
+  } = useQuery(['ticket', id], () => ticketsAPI.getById(Number(id)), {
+    enabled: !!id,
+  });
 
   if (isLoading) {
     return (
@@ -22,32 +24,35 @@ const TicketView = () => {
           <LoadingSpinner size="lg" />
         </div>
       </div>
-    )
+    );
   }
 
   if (error || !ticket) {
     return (
       <div className="p-6">
-        <div className="text-center text-red-600">
-          Заявка не найдена
-        </div>
+        <div className="text-center text-red-600">Заявка не найдена</div>
       </div>
-    )
+    );
   }
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'pending': return 'status-pending'
-      case 'in_progress': return 'status-in_progress'
-      case 'done': return 'status-done'
-      case 'rejected': return 'status-rejected'
-      default: return 'bg-gray-100'
+      case 'pending':
+        return 'status-pending';
+      case 'in_progress':
+        return 'status-in_progress';
+      case 'done':
+        return 'status-done';
+      case 'rejected':
+        return 'status-rejected';
+      default:
+        return 'bg-gray-100';
     }
-  }
+  };
 
   const getPriorityColor = (priority: number) => {
-    return `priority-${priority}`
-  }
+    return `priority-${priority}`;
+  };
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -55,22 +60,26 @@ const TicketView = () => {
       <div className="mb-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 mb-2">
-              {ticket.title}
-            </h1>
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">{ticket.title}</h1>
             <div className="flex items-center space-x-4">
-              <span className={`inline-flex px-3 py-1 text-sm font-medium rounded-full ${getStatusColor(ticket.status)}`}>
+              <span
+                className={`inline-flex px-3 py-1 text-sm font-medium rounded-full ${getStatusColor(
+                  ticket.status
+                )}`}
+              >
                 {ticket.status}
               </span>
-              <span className={`inline-flex px-3 py-1 text-sm font-medium rounded-full ${getPriorityColor(ticket.priority)}`}>
+              <span
+                className={`inline-flex px-3 py-1 text-sm font-medium rounded-full ${getPriorityColor(
+                  ticket.priority
+                )}`}
+              >
                 Приоритет {ticket.priority}
               </span>
             </div>
           </div>
           <div className="flex space-x-2">
-            <button className="btn-outline">
-              Скачать PDF
-            </button>
+            <button className="btn-outline">Скачать PDF</button>
             {(user?.role === 'admin' || ticket.executor_id === user?.id) && (
               <a href={`/tickets/${ticket.id}/edit`} className="btn-primary">
                 Редактировать
@@ -96,7 +105,7 @@ const TicketView = () => {
                   <p className="text-gray-600">{ticket.address}</p>
                 </div>
               </div>
-              
+
               <div className="flex items-start space-x-3">
                 <FileText className="h-5 w-5 text-gray-400 mt-0.5" />
                 <div>
@@ -104,13 +113,15 @@ const TicketView = () => {
                   <p className="text-gray-600 whitespace-pre-wrap">{ticket.description}</p>
                 </div>
               </div>
-              
+
               <div className="flex items-start space-x-3">
                 <Calendar className="h-5 w-5 text-gray-400 mt-0.5" />
                 <div>
-                  <p className="text-sm font-medium text-gray-900">Крайний срок</p>
+                  <p className="text-sm font-medium text-gray-900">Планируемое завершение</p>
                   <p className="text-gray-600">
-                    {new Date(ticket.deadline).toLocaleDateString('ru-RU')}
+                    {ticket.end_time
+                      ? new Date(ticket.end_time).toLocaleDateString('ru-RU')
+                      : 'Не указано'}
                   </p>
                 </div>
               </div>
@@ -193,7 +204,7 @@ const TicketView = () => {
                   <p className="text-gray-600">{ticket.customer?.full_name}</p>
                 </div>
               </div>
-              
+
               {ticket.executor && (
                 <div className="flex items-center space-x-3">
                   <User className="h-5 w-5 text-gray-400" />
@@ -221,7 +232,7 @@ const TicketView = () => {
                   </p>
                 </div>
               </div>
-              
+
               {ticket.started_at && (
                 <div className="flex items-center space-x-3">
                   <Clock className="h-5 w-5 text-gray-400" />
@@ -233,7 +244,7 @@ const TicketView = () => {
                   </div>
                 </div>
               )}
-              
+
               {ticket.completed_at && (
                 <div className="flex items-center space-x-3">
                   <Clock className="h-5 w-5 text-gray-400" />
@@ -249,25 +260,23 @@ const TicketView = () => {
           </div>
 
           {/* Действия для исполнителей */}
-          {user?.role === 'executor' && ticket.executor_id === user.id && ticket.status === 'in_progress' && (
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">Действия</h3>
+          {user?.role === 'executor' &&
+            ticket.executor_id === user.id &&
+            ticket.status === 'in_progress' && (
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="card-title">Действия</h3>
+                </div>
+                <div className="card-content space-y-3">
+                  <button className="btn-success w-full">Завершить работу</button>
+                  <button className="btn-danger w-full">Отклонить заявку</button>
+                </div>
               </div>
-              <div className="card-content space-y-3">
-                <button className="btn-success w-full">
-                  Завершить работу
-                </button>
-                <button className="btn-danger w-full">
-                  Отклонить заявку
-                </button>
-              </div>
-            </div>
-          )}
+            )}
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default TicketView
+export default TicketView;

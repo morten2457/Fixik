@@ -14,7 +14,7 @@ interface AuthState {
   setUser: (user: User | null) => void
 }
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isLoading: true,
   isAuthenticated: false,
@@ -152,4 +152,8 @@ export const useCanManageUsers = () => {
 export const useCanGenerateReports = () => {
   const user = useCurrentUser()
   return user?.role === 'admin' || user?.role === 'executor'
+}
+export const useIsOperator = () => {
+  const user = useCurrentUser()
+  return user?.role === 'operator'
 }

@@ -9,12 +9,25 @@ from typing import Optional, List
 from sqlmodel import SQLModel, Field, Relationship
 import uuid
 
+class Duty(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    city: str
+    employee_name: str
+    employee_phone: str
+    date: str  # YYYY-MM-DD
+
+class Employee(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    phone: str
+    city: str  # город, к которому привязан сотрудник (можно не использовать)
 
 class UserRole(str, Enum):
     """Роли пользователей в системе"""
     ADMIN = "admin"
     EXECUTOR = "executor" 
     CUSTOMER = "customer"
+    OPERATOR = "operator"
 
 
 class TicketStatus(str, Enum):
@@ -23,6 +36,7 @@ class TicketStatus(str, Enum):
     IN_PROGRESS = "in_progress"  # В работе
     DONE = "done"             # Выполнено
     REJECTED = "rejected"     # Отклонено
+    WAITING = "waiting"  # Ждем согласования
 
 
 # ===== ПОЛЬЗОВАТЕЛИ =====
@@ -69,9 +83,11 @@ class TicketBase(SQLModel):
     """Базовая модель заявки"""
     title: str
     address: str
-    description: str
-    deadline: datetime
-    priority: int = Field(default=1, ge=1, le=5)  # 1-низкий, 5-критический
+    description: Optional[str] = None          # теперь необязательное
+    start_time: Optional[datetime] = None      # планируемое время начала
+    end_time: Optional[datetime] = None        # планируемое время окончания
+    priority: int = Field(default=1, ge=1, le=5)
+    system: Optional[str] = Field(default=None)
 
 
 class Ticket(TicketBase, table=True):
@@ -83,10 +99,14 @@ class Ticket(TicketBase, table=True):
     customer_id: int = Field(foreign_key="user.id")
     executor_id: Optional[int] = Field(default=None, foreign_key="user.id")
     
+    # Новые поля: имя и телефон исполнителя (дублируются для истории)
+    executor_name: Optional[str] = Field(default=None)
+    executor_phone: Optional[str] = Field(default=None)
+    
     # Временные метки
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None       # фактическое время начала
+    completed_at: Optional[datetime] = None     # фактическое время завершения
     
     # Результат работы
     completion_comment: Optional[str] = None
@@ -108,12 +128,16 @@ class Ticket(TicketBase, table=True):
 class TicketCreate(TicketBase):
     """Схема создания заявки"""
     executor_id: Optional[int] = None
+    executor_name: Optional[str] = None   # добавлено
+    executor_phone: Optional[str] = None  # добавлено
 
 
 class TicketUpdate(SQLModel):
     """Схема обновления заявки"""
     status: Optional[TicketStatus] = None
     executor_id: Optional[int] = None
+    executor_name: Optional[str] = None   # добавлено
+    executor_phone: Optional[str] = None  # добавлено
     completion_comment: Optional[str] = None
     rejection_reason: Optional[str] = None
 
@@ -124,6 +148,8 @@ class TicketPublic(TicketBase):
     status: TicketStatus
     customer_id: int
     executor_id: Optional[int]
+    executor_name: Optional[str] = None   # добавлено
+    executor_phone: Optional[str] = None  # добавлено
     created_at: datetime
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
@@ -191,3 +217,12 @@ class WSMessage(SQLModel):
     data: dict
     recipient_user_id: Optional[int] = None  # None = broadcast
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class System(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    text_color: str
+    bg_color: str
+    border_color: str
+    is_default: bool = Field(default=False)

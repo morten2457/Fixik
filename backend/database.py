@@ -6,14 +6,15 @@
 import os
 from typing import AsyncGenerator
 from sqlmodel import SQLModel, create_engine, Session, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
 import asyncio
-
+from models import TicketStatus  # импорт из моделей (для get_tickets_for_user)
 
 # ===== КОНФИГУРАЦИЯ БД =====
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./tickets.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/tickets.db")
 ASYNC_DATABASE_URL = DATABASE_URL.replace("sqlite://", "sqlite+aiosqlite://")
 
 # Создание движков БД
@@ -33,8 +34,7 @@ def create_db_and_tables():
     Создает все таблицы в базе данных.
     Используется при первом запуске приложения.
     """
-    from models import User, Ticket  # Импорт моделей
-    
+    from models import User, Ticket, System, Employee  # добавлен Employee
     SQLModel.metadata.create_all(engine)
     print("✅ База данных и таблицы созданы")
 
@@ -42,12 +42,28 @@ def create_db_and_tables():
 async def init_db():
     """
     Асинхронная инициализация базы данных.
-    Создает таблицы если их нет.
+    Создает таблицы если их нет, а также добавляет дефолтные системы.
     """
-    from models import User, Ticket
+    from models import User, Ticket, System, Employee  # добавлен Employee
     
     async with async_engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+    
+    # Добавляем дефолтные системы, если таблица пуста
+    async with async_session_maker() as session:
+        result = await session.exec(select(System))
+        existing = result.first()
+        if not existing:
+            default_systems = [
+                System(name="Си норд", text_color="#6399F6", bg_color="#283142", border_color="#6399F6", is_default=True),
+                System(name="АИР", text_color="#DC7B2B", bg_color="#E9AE71", border_color="#DC7B2B", is_default=True),
+                System(name="Георитм", text_color="#71A342", bg_color="#415649", border_color="#71A342", is_default=True),
+                System(name="Струна", text_color="#F44637", bg_color="#57383C", border_color="#F44637", is_default=True),
+            ]
+            for sys in default_systems:
+                session.add(sys)
+            await session.commit()
+            print("✅ Дефолтные системы созданы")
     
     print("✅ Асинхронная инициализация БД завершена")
 
@@ -82,7 +98,6 @@ def get_sync_session() -> Session:
 async def get_user_by_email(session: AsyncSession, email: str):
     """Получить пользователя по email"""
     from models import User
-    
     result = await session.exec(select(User).where(User.email == email))
     return result.first()
 
@@ -90,7 +105,6 @@ async def get_user_by_email(session: AsyncSession, email: str):
 async def get_user_by_id(session: AsyncSession, user_id: int):
     """Получить пользователя по ID"""
     from models import User
-    
     result = await session.exec(select(User).where(User.id == user_id))
     return result.first()
 
@@ -110,23 +124,23 @@ async def get_ticket_by_id(session: AsyncSession, ticket_id: int):
 
 
 async def get_tickets_for_user(session: AsyncSession, user_id: int, role: str):
-    """Получить заявки для пользователя в зависимости от роли"""
     from models import Ticket, User, UserRole
     from sqlalchemy.orm import selectinload
-    
+
     query = select(Ticket).options(
         selectinload(Ticket.customer),
         selectinload(Ticket.executor)
     )
-    
+
     if role == UserRole.CUSTOMER:
-        # Клиент видит только свои заявки
         query = query.where(Ticket.customer_id == user_id)
     elif role == UserRole.EXECUTOR:
-        # Исполнитель видит назначенные ему заявки
         query = query.where(Ticket.executor_id == user_id)
-    # ADMIN видит все заявки (без доп. фильтрации)
-    
+    elif role == UserRole.OPERATOR:
+        # Оператор видит все заявки, кроме выполненных
+        query = query.where(Ticket.status != TicketStatus.DONE)
+    # ADMIN видит всё
+
     result = await session.exec(query.order_by(Ticket.created_at.desc()))
     return result.all()
 
@@ -134,7 +148,6 @@ async def get_tickets_for_user(session: AsyncSession, user_id: int, role: str):
 async def get_executors(session: AsyncSession):
     """Получить список всех исполнителей"""
     from models import User, UserRole
-    
     result = await session.exec(
         select(User).where(
             User.role == UserRole.EXECUTOR,
@@ -170,7 +183,7 @@ async def get_ticket_stats(session: AsyncSession):
         avg_query = select(
             func.avg(
                 func.julianday(Ticket.completed_at) - func.julianday(Ticket.started_at)
-            ) * 24  # Перевод в часы
+            ) * 24
         ).where(
             Ticket.status == TicketStatus.DONE,
             Ticket.started_at.isnot(None),
@@ -198,19 +211,16 @@ async def cleanup_old_tickets(days: int = 90):
     from datetime import datetime, timedelta
     from models import Ticket
     import os
-    import asyncio
     
     cutoff_date = datetime.utcnow() - timedelta(days=days)
     
     async with async_session_maker() as session:
-        # Находим старые заявки
         old_tickets_query = select(Ticket).where(Ticket.created_at < cutoff_date)
         result = await session.exec(old_tickets_query)
         old_tickets = result.all()
         
         deleted_count = 0
         for ticket in old_tickets:
-            # Удаляем связанные файлы
             for photo_path in [ticket.before_photo_path, ticket.after_photo_path]:
                 if photo_path and os.path.exists(photo_path):
                     try:
@@ -218,8 +228,6 @@ async def cleanup_old_tickets(days: int = 90):
                         print(f"🗑️ Удален файл: {photo_path}")
                     except Exception as e:
                         print(f"❌ Ошибка удаления файла {photo_path}: {e}")
-            
-            # Удаляем заявку
             await session.delete(ticket)
             deleted_count += 1
         
@@ -244,5 +252,4 @@ async def test_connection():
 
 
 if __name__ == "__main__":
-    # Тестирование подключения
     asyncio.run(test_connection())
